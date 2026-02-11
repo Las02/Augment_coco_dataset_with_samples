@@ -5,9 +5,11 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "albumentations>=2.0.8",
+    "albumentations==1.4.24",
     "fiftyone>=1.12.0",
     "jupyter>=1.1.1",
     "opencv-python>=4.13.0.92",
     "setuptools>=82.0.0",
+    "tqdm>=4.67.3",
+    "typer>=0.23.0",
 ]
