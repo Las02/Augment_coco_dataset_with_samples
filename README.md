@@ -29,6 +29,11 @@ Options:
 
 Sampled images receive 1 augmented copy (no original kept) and are prefixed with `sample_{stem}_` to avoid filename collisions.
 
+Example:
+```
+uv run augment.py --test --copies 8 --sample ../data/AGAR_DATASET_COCO_V2/fold_1/train:10 --input ../data/fold_1/train/ --output delme
+```
+
 ## Augmentation pipeline
 
 Built with [Albumentations](https://albumentations.ai/) (`build_pipeline()`):
