@@ -249,7 +249,7 @@ def _add_image_or_slices(
     new_images: list[dict],
     new_annotations: list[dict],
     overlap_ratio: float = 0.2,
-    min_area_ratio: float = 0.1,
+    min_area_ratio: float = 0.2,
 ) -> tuple[int, int]:
     """Save an image (full or sliced into a 2x2 or 3x3 grid) and append COCO entries.
 
@@ -278,13 +278,15 @@ def _add_image_or_slices(
     slice_w = math.ceil(w / (grid_size - overlap_ratio * (grid_size - 1)))
     slice_h = math.ceil(h / (grid_size - overlap_ratio * (grid_size - 1)))
 
+    # Filter out zero-area annotations to avoid SAHI division by zero
+    valid_annotations = [ann for ann in annotations if ann["bbox"][2] > 0 and ann["bbox"][3] > 0]
     coco_anns = [
         CocoAnnotation(
             bbox=ann["bbox"],
             category_id=ann["category_id"],
             category_name=ann.get("category_name", "colony"),
         )
-        for ann in annotations
+        for ann in valid_annotations
     ]
 
     pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
@@ -354,6 +356,7 @@ def _process_images(
     extra: bool = False,
     file_prefix: str = "",
     desc: str = "Augmenting",
+    min_area_ratio: float = 0.3,
 ):
     """Process a list of COCO image entries: optionally copy originals, then augment."""
     for img_entry in tqdm(img_entries, desc=desc):
@@ -387,6 +390,7 @@ def _process_images(
                 next_ann_id=next_ann_id,
                 new_images=new_images,
                 new_annotations=new_annotations,
+                min_area_ratio=min_area_ratio,
             )
 
         # Resolve dimensions lazily (needed for per-image JSON datasets)
@@ -442,6 +446,7 @@ def _process_images(
                     "iscrowd": 0,
                 }
                 for (x, y, w, h), label in zip(transformed["bboxes"], transformed["labels"])
+                if w >= 1 and h >= 1  # Filter out tiny bboxes
             ]
             next_image_id, next_ann_id = _add_image_or_slices(
                 image=aug_img,
@@ -451,6 +456,7 @@ def _process_images(
                 next_ann_id=next_ann_id,
                 new_images=new_images,
                 new_annotations=new_annotations,
+                min_area_ratio=min_area_ratio,
             )
 
     return next_image_id, next_ann_id
@@ -565,6 +571,7 @@ def augment(
                 extra=extra,
                 file_prefix=prefix,
                 desc=f"Augmenting (sampled from {sample_dir.name})",
+                min_area_ratio=0.1,
             )
 
     out_coco = {
