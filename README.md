@@ -12,17 +12,6 @@ uv sync
 
 ## Usage
 
-### Make targets
-
-```bash
-make augment              # Full augmentation run (default: 5 copies per image)
-make test                 # Quick test: 4 random images to /tmp/augmented_test
-make clean                # Remove test output
-make augment COPIES=3     # Override copy count
-```
-
-### CLI
-
 ```bash
 uv run python augment.py --copies 5 --input /path/to/dataset --output /path/to/output
 ```
@@ -36,6 +25,7 @@ Options:
 | `--copies N` | Number of augmented copies per image (default: 5) |
 | `--sample PATH:NUM` | Sample NUM images from another dataset (repeatable) |
 | `--test` | Test mode: only process 4 random images |
+| `--extra` | Enable extra augmentations (perspective, defocus, edge flare, colony reflections) |
 
 Sampled images receive 1 augmented copy (no original kept) and are prefixed with `sample_{stem}_` to avoid filename collisions.
 
@@ -43,17 +33,23 @@ Sampled images receive 1 augmented copy (no original kept) and are prefixed with
 
 Built with [Albumentations](https://albumentations.ai/) (`build_pipeline()`):
 
-- Random 90-degree rotation (p=0.75)
-- Horizontal flip (p=0.5)
-- Vertical flip (p=0.5)
-- Channel dropout (p=0.2)
-- Edge flare / sun flare (p=0.1)
+**Base pipeline** (always active):
+- Horizontal flip (p=0.5), Vertical flip (p=0.5)
+- Arbitrary rotation up to 180° with black border fill (p=0.75)
+- RandomBrightnessContrast (p=0.3), HueSaturationValue (p=0.2)
+- ISONoise (p=0.2), ImageCompression (p=0.1), ChannelDropout (p=0.1)
 
-Bounding boxes are tracked through all transforms with COCO format `[x, y, w, h]` and a minimum visibility threshold of 0.9.
+**Extra augmentations** (`--extra` flag):
+- Perspective warp (p=0.05)
+- Defocus blur (p=0.1)
+- Edge flare / sun flare (p=0.1)
+- Colony reflections (`reflect_colonies()`)
+
+Bounding boxes are tracked through all transforms with COCO format `[x, y, w, h]` and a minimum visibility threshold of 0.05.
 
 ### Colony reflections
 
-A post-pipeline step (`reflect_colonies()`) alpha-blends faint, blurred copies of existing colony patches at random offsets to act as unlabeled distractors, helping the model learn to distinguish real colonies from artifacts.
+A post-pipeline step (`reflect_colonies()`, enabled with `--extra`) alpha-blends faint, blurred copies of existing colony patches at random offsets to act as unlabeled distractors, helping the model learn to distinguish real colonies from artifacts.
 
 ## Data format
 
