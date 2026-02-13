@@ -133,16 +133,26 @@ def edge_flare(src_radius=250, num_flare_circles_range=(3, 6), p=0.8):
     )
 
 
-def build_pipeline():
+def build_pipeline(extra: bool = False):
+    transforms = [
+        # Geometric
+        A.HorizontalFlip(p=0.5),
+        A.VerticalFlip(p=0.5),
+        A.Rotate(limit=180, border_mode=cv2.BORDER_CONSTANT, value=0, p=0.75),
+        # Photometric
+        A.RandomBrightnessContrast(p=0.3),
+        A.HueSaturationValue(p=0.2),
+        # Noise & artifacts
+        A.ISONoise(p=0.2),
+        A.ImageCompression(p=0.1),
+        A.ChannelDropout(p=0.1),
+    ]
+    if extra:
+        transforms.insert(3, A.Perspective(scale=(0.02, 0.05), pad_mode=cv2.BORDER_CONSTANT, pad_val=0, p=0.05))
+        transforms.append(A.Defocus(p=0.1, alias_blur=[0.02, 0.1], radius=[1, 2]))
     return A.Compose(
-        [
-            A.RandomRotate90(p=0.75),
-            A.HorizontalFlip(p=0.5),
-            A.VerticalFlip(p=0.5),
-            A.ChannelDropout(p=0.2),
-            edge_flare(src_radius=400, num_flare_circles_range=(3, 6), p=0.1),
-        ],
-        bbox_params=A.BboxParams(format="coco", min_visibility=0.9, label_fields=["labels"]),
+        transforms,
+        bbox_params=A.BboxParams(format="coco", min_visibility=0.05, label_fields=["labels"]),
     )
 
 
@@ -240,6 +250,7 @@ def _process_images(
     new_images: list[dict],
     new_annotations: list[dict],
     copy_original: bool,
+    extra: bool = False,
     file_prefix: str = "",
     desc: str = "Augmenting",
 ):
@@ -252,9 +263,14 @@ def _process_images(
 
         out_file_name = f"{file_prefix}{file_name}" if file_prefix else file_name
 
+        # Read image early so both original copy and augmentation use flattened alpha
+        image = imread_flatten_alpha(str(src_path))
+        if image is None:
+            continue
+
         # --- Copy original ---
         if copy_original:
-            shutil.copy2(src_path, output / out_file_name)
+            cv2.imwrite(str(output / out_file_name), image)
             orig_entry = {**img_entry, "id": next_image_id, "file_name": out_file_name}
             new_images.append(orig_entry)
             for ann in anns_by_image.get(img_entry["id"], []):
@@ -269,11 +285,6 @@ def _process_images(
                 next_ann_id += 1
             next_image_id += 1
 
-        # --- Augment ---
-        image = cv2.imread(str(src_path))
-        if image is None:
-            continue
-
         # Resolve dimensions lazily (needed for per-image JSON datasets)
         img_h, img_w = image.shape[:2]
         if img_entry["width"] == 0:
@@ -281,22 +292,41 @@ def _process_images(
             img_entry["height"] = img_h
 
         img_anns = anns_by_image.get(img_entry["id"], [])
-        bboxes = [ann["bbox"] for ann in img_anns]
-        labels = [cat_id_to_name[ann["category_id"]] for ann in img_anns]
+        bboxes = []
+        labels = []
+        for ann in img_anns:
+            x = max(0, min(ann["bbox"][0], img_w))
+            y = max(0, min(ann["bbox"][1], img_h))
+            w = min(ann["bbox"][2], img_w - x)
+            h = min(ann["bbox"][3], img_h - y)
+            if w > 0 and h > 0:
+                bboxes.append([x, y, w, h])
+                labels.append(cat_id_to_name[ann["category_id"]])
 
         stem = Path(out_file_name).stem
         suffix = Path(out_file_name).suffix or ".png"
 
+        if extra:
+            flare = edge_flare(
+                src_radius=max(30, int(min(img_h, img_w) * 0.4)),
+                num_flare_circles_range=(3, 6),
+                p=0.1,
+            )
+
         for i in range(copies):
             transformed = pipeline(image=image, bboxes=bboxes, labels=labels)
-            aug_img = reflect_colonies(
-                transformed["image"],
-                transformed["bboxes"],
-                num_reflections=None,
-                opacity=(0.1, 0.35),
-                max_offset=80,
-                p=0.05,
-            )
+            if extra:
+                transformed["image"] = flare(image=transformed["image"])["image"]
+                aug_img = reflect_colonies(
+                    transformed["image"],
+                    transformed["bboxes"],
+                    num_reflections=None,
+                    opacity=(0.1, 0.35),
+                    max_offset=80,
+                    p=1,
+                )
+            else:
+                aug_img = transformed["image"]
 
             aug_name = f"{stem}_aug_{i}{suffix}"
             cv2.imwrite(str(output / aug_name), aug_img)
@@ -353,6 +383,7 @@ def augment(
         None, help="Sample from another dataset: PATH:NUM (repeatable)"
     ),
     test: bool = typer.Option(False, help="Test mode: only augment 4 random images"),
+    extra: bool = typer.Option(False, help="Enable extra augmentations: reflect_colonies, perspective, edge_flare, defocus"),
 ):
     """Augment a COCO dataset: copy originals and generate augmented copies."""
     coco, anns_by_image, cat_id_to_name = _load_coco_dataset(input)
@@ -360,7 +391,7 @@ def augment(
     output.mkdir(parents=True, exist_ok=True)
 
     name_to_cat_id = {c["name"]: c["id"] for c in coco["categories"]}
-    pipeline = build_pipeline()
+    pipeline = build_pipeline(extra=extra)
 
     new_images: list[dict] = []
     new_annotations: list[dict] = []
@@ -386,6 +417,7 @@ def augment(
         new_images=new_images,
         new_annotations=new_annotations,
         copy_original=True,
+        extra=extra,
         desc="Augmenting (primary)",
     )
 
@@ -429,6 +461,7 @@ def augment(
                 new_images=new_images,
                 new_annotations=new_annotations,
                 copy_original=False,
+                extra=extra,
                 file_prefix=prefix,
                 desc=f"Augmenting (sampled from {sample_dir.name})",
             )
