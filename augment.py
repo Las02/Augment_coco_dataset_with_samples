@@ -388,9 +388,16 @@ def augment(
     """Augment a COCO dataset: copy originals and generate augmented copies."""
     coco, anns_by_image, cat_id_to_name = _load_coco_dataset(input)
 
+    # Normalize all categories to a single "colony" class
+    coco["categories"] = [{"id": 0, "name": "colony", "supercategory": "colony"}]
+    cat_id_to_name = {old_id: "colony" for old_id in cat_id_to_name}
+    for anns in anns_by_image.values():
+        for ann in anns:
+            ann["category_id"] = 0
+
     output.mkdir(parents=True, exist_ok=True)
 
-    name_to_cat_id = {c["name"]: c["id"] for c in coco["categories"]}
+    name_to_cat_id = {"colony": 0}
     pipeline = build_pipeline(extra=extra)
 
     new_images: list[dict] = []
@@ -429,14 +436,11 @@ def augment(
             sample_dir, sample_n = _parse_sample_arg(sample_spec)
             s_coco, s_anns, s_cat_id_to_name = _load_coco_dataset(sample_dir)
 
-            # Validate that sampled category names exist in primary dataset
-            for cat in s_coco["categories"]:
-                if cat["name"] not in name_to_cat_id:
-                    typer.echo(
-                        f"Category '{cat['name']}' from {sample_dir} not found in primary dataset",
-                        err=True,
-                    )
-                    raise typer.Exit(1)
+            # Normalize sampled categories to "colony"
+            s_cat_id_to_name = {old_id: "colony" for old_id in s_cat_id_to_name}
+            for s_img_anns in s_anns.values():
+                for ann in s_img_anns:
+                    ann["category_id"] = 0
 
             # Randomly sample images
             all_images = s_coco["images"]
