@@ -145,11 +145,11 @@ def build_pipeline(extra: bool = False):
         A.Rotate(limit=180, border_mode=cv2.BORDER_CONSTANT, value=0, p=0.75),
         # Photometric
         A.RandomBrightnessContrast(p=0.3),
-        A.HueSaturationValue(p=0.2),
+        A.HueSaturationValue(p=0.3),
         # Noise & artifacts
-        A.ISONoise(p=0.2),
-        A.ImageCompression(p=0.1),
-        A.ChannelDropout(p=0.1),
+        A.ISONoise(p=0.3),
+        A.ImageCompression(p=0.3),
+        A.ChannelDropout(p=0.3),
     ]
     if extra:
         transforms.insert(3, A.Perspective(scale=(0.02, 0.05), pad_mode=cv2.BORDER_CONSTANT, pad_val=0, p=0.05))
@@ -251,15 +251,15 @@ def _add_image_or_slices(
     overlap_ratio: float = 0.2,
     min_area_ratio: float = 0.1,
 ) -> tuple[int, int]:
-    """Save an image (full or sliced into a 2x2 grid) and append COCO entries.
+    """Save an image (full or sliced into a 2x2 or 3x3 grid) and append COCO entries.
 
-    With 50% probability, the image is sliced into 4 tiles using SAHI with
-    *overlap_ratio* overlap.  Otherwise the full image is saved as-is.
+    With ~33% probability each: full image, 2x2 grid (4 tiles), or 3x3 grid (9 tiles).
     """
     h, w = image.shape[:2]
 
-    if random.random() >= 0.5:
-        # --- Keep full image ---
+    choice = random.random()
+    if choice < 0.7:
+        # --- Keep full image (70%) ---
         cv2.imwrite(str(image_path), image)
         new_images.append({
             "id": next_image_id,
@@ -273,9 +273,10 @@ def _add_image_or_slices(
         next_image_id += 1
         return next_image_id, next_ann_id
 
-    # --- Slice into 2x2 grid ---
-    slice_w = math.ceil(w / (2 - overlap_ratio))
-    slice_h = math.ceil(h / (2 - overlap_ratio))
+    # --- Slice into grid ---
+    grid_size = 2 if choice < 0.95 else 3  # 25% 2x2, 5% 3x3
+    slice_w = math.ceil(w / (grid_size - overlap_ratio * (grid_size - 1)))
+    slice_h = math.ceil(h / (grid_size - overlap_ratio * (grid_size - 1)))
 
     coco_anns = [
         CocoAnnotation(
