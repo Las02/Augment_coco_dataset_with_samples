@@ -1,6 +1,7 @@
 """Apply augmentation pipeline to a COCO-format dataset, producing original + augmented images."""
 
 import json
+import math
 import random
 import shutil
 from pathlib import Path
@@ -10,6 +11,9 @@ import albumentations as A
 import cv2
 import numpy as np
 import typer
+from PIL import Image
+from sahi.slicing import slice_image
+from sahi.utils.coco import CocoAnnotation
 from tqdm import tqdm
 
 app = typer.Typer()
@@ -236,6 +240,102 @@ def _load_coco_dataset(dir_path: Path):
     return coco, anns_by_image, cat_id_to_name
 
 
+def _add_image_or_slices(
+    image: np.ndarray,
+    image_path: Path,
+    annotations: list[dict],
+    next_image_id: int,
+    next_ann_id: int,
+    new_images: list[dict],
+    new_annotations: list[dict],
+    overlap_ratio: float = 0.2,
+    min_area_ratio: float = 0.1,
+) -> tuple[int, int]:
+    """Save an image (full or sliced into a 2x2 grid) and append COCO entries.
+
+    With 50% probability, the image is sliced into 4 tiles using SAHI with
+    *overlap_ratio* overlap.  Otherwise the full image is saved as-is.
+    """
+    h, w = image.shape[:2]
+
+    if random.random() >= 0.5:
+        # --- Keep full image ---
+        cv2.imwrite(str(image_path), image)
+        new_images.append({
+            "id": next_image_id,
+            "file_name": image_path.name,
+            "width": w,
+            "height": h,
+        })
+        for ann in annotations:
+            new_annotations.append({**ann, "id": next_ann_id, "image_id": next_image_id})
+            next_ann_id += 1
+        next_image_id += 1
+        return next_image_id, next_ann_id
+
+    # --- Slice into 2x2 grid ---
+    slice_w = math.ceil(w / (2 - overlap_ratio))
+    slice_h = math.ceil(h / (2 - overlap_ratio))
+
+    coco_anns = [
+        CocoAnnotation(
+            bbox=ann["bbox"],
+            category_id=ann["category_id"],
+            category_name=ann.get("category_name", "colony"),
+        )
+        for ann in annotations
+    ]
+
+    pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+
+    result = slice_image(
+        image=pil_image,
+        coco_annotation_list=coco_anns if coco_anns else None,
+        slice_height=slice_h,
+        slice_width=slice_w,
+        overlap_height_ratio=overlap_ratio,
+        overlap_width_ratio=overlap_ratio,
+        min_area_ratio=min_area_ratio,
+        verbose=False,
+    )
+
+    stem = image_path.stem
+    suffix = image_path.suffix or ".png"
+    parent = image_path.parent
+
+    for idx in range(len(result)):
+        sliced = result[idx]
+        # sliced is a dict: {image: ndarray (RGB), coco_image: CocoImage, ...}
+        slice_img = cv2.cvtColor(sliced["image"], cv2.COLOR_RGB2BGR)
+        sh, sw = slice_img.shape[:2]
+
+        slice_name = f"{stem}_slice_{idx}{suffix}"
+        cv2.imwrite(str(parent / slice_name), slice_img)
+
+        new_images.append({
+            "id": next_image_id,
+            "file_name": slice_name,
+            "width": sw,
+            "height": sh,
+        })
+
+        for sa in sliced["coco_image"].annotations:
+            bbox = sa.bbox
+            new_annotations.append({
+                "id": next_ann_id,
+                "image_id": next_image_id,
+                "category_id": sa.category_id,
+                "bbox": [round(bbox[0], 2), round(bbox[1], 2), round(bbox[2], 2), round(bbox[3], 2)],
+                "area": round(bbox[2] * bbox[3], 2),
+                "iscrowd": 0,
+            })
+            next_ann_id += 1
+
+        next_image_id += 1
+
+    return next_image_id, next_ann_id
+
+
 def _process_images(
     img_entries: list[dict],
     src_dir: Path,
@@ -270,20 +370,23 @@ def _process_images(
 
         # --- Copy original ---
         if copy_original:
-            cv2.imwrite(str(output / out_file_name), image)
-            orig_entry = {**img_entry, "id": next_image_id, "file_name": out_file_name}
-            new_images.append(orig_entry)
-            for ann in anns_by_image.get(img_entry["id"], []):
-                new_annotations.append(
-                    {
-                        **ann,
-                        "id": next_ann_id,
-                        "image_id": next_image_id,
-                        "category_id": name_to_cat_id[cat_id_to_name[ann["category_id"]]],
-                    }
-                )
-                next_ann_id += 1
-            next_image_id += 1
+            orig_anns = [
+                {
+                    **ann,
+                    "category_id": name_to_cat_id[cat_id_to_name[ann["category_id"]]],
+                    "category_name": cat_id_to_name[ann["category_id"]],
+                }
+                for ann in anns_by_image.get(img_entry["id"], [])
+            ]
+            next_image_id, next_ann_id = _add_image_or_slices(
+                image=image,
+                image_path=output / out_file_name,
+                annotations=orig_anns,
+                next_image_id=next_image_id,
+                next_ann_id=next_ann_id,
+                new_images=new_images,
+                new_annotations=new_annotations,
+            )
 
         # Resolve dimensions lazily (needed for per-image JSON datasets)
         img_h, img_w = image.shape[:2]
@@ -329,32 +432,25 @@ def _process_images(
                 aug_img = transformed["image"]
 
             aug_name = f"{stem}_aug_{i}{suffix}"
-            cv2.imwrite(str(output / aug_name), aug_img)
-
-            new_images.append(
+            aug_anns = [
                 {
-                    "id": next_image_id,
-                    "file_name": aug_name,
-                    "width": img_w,
-                    "height": img_h,
+                    "bbox": [round(x, 2), round(y, 2), round(w, 2), round(h, 2)],
+                    "area": round(w * h, 2),
+                    "category_id": name_to_cat_id[label],
+                    "category_name": label,
+                    "iscrowd": 0,
                 }
+                for (x, y, w, h), label in zip(transformed["bboxes"], transformed["labels"])
+            ]
+            next_image_id, next_ann_id = _add_image_or_slices(
+                image=aug_img,
+                image_path=output / aug_name,
+                annotations=aug_anns,
+                next_image_id=next_image_id,
+                next_ann_id=next_ann_id,
+                new_images=new_images,
+                new_annotations=new_annotations,
             )
-
-            for bbox, label in zip(transformed["bboxes"], transformed["labels"]):
-                x, y, w, h = bbox
-                new_annotations.append(
-                    {
-                        "id": next_ann_id,
-                        "image_id": next_image_id,
-                        "category_id": name_to_cat_id[label],
-                        "bbox": [round(x, 2), round(y, 2), round(w, 2), round(h, 2)],
-                        "area": round(w * h, 2),
-                        "iscrowd": 0,
-                    }
-                )
-                next_ann_id += 1
-
-            next_image_id += 1
 
     return next_image_id, next_ann_id
 

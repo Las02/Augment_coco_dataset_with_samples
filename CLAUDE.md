@@ -29,6 +29,7 @@ uv run python augment.py --input ... --output ... --test                      # 
 - **`augment.py`** — Production CLI (Typer). Self-contained: copies augmentation functions from main.py rather than importing. Key components:
   - `build_pipeline(extra)`: Albumentations Compose chain (flips, rotation, brightness/contrast, HSV, noise, compression, channel dropout; with `--extra`: perspective, defocus, edge flare) with COCO bbox params (`min_visibility=0.05`)
   - `reflect_colonies()`: Post-pipeline step that alpha-blends faint copies of existing colonies at random offsets as unlabeled distractors
+  - `_add_image_or_slices()`: Coin-flip (50%) decides whether to save full image or slice into a 2×2 SAHI grid with 20% overlap. Slice dims computed per-image as `ceil(size / 1.8)`.
   - `_process_images()`: Core loop handling original copying + N augmented copies, with ID management for COCO JSON
   - `--sample PATH:NUM`: Sampled images get only 1 augmented copy (no original kept), prefixed with `sample_{stem}_` to avoid collisions
 
@@ -42,4 +43,5 @@ Input/output directories contain images + `_annotations.coco.json`. Bboxes use C
 
 - `albumentations==1.4.24` (pinned — API may differ across versions)
 - `opencv-python` for image I/O and reflect_colonies blending
+- `sahi>=0.11.19` for 2×2 SAHI slicing (50% of output images)
 - `typer` for CLI, `tqdm` for progress

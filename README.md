@@ -52,6 +52,10 @@ Built with [Albumentations](https://albumentations.ai/) (`build_pipeline()`):
 
 Bounding boxes are tracked through all transforms with COCO format `[x, y, w, h]` and a minimum visibility threshold of 0.05.
 
+### SAHI 2×2 slicing
+
+Each output image (originals and augmented copies) has a 50% chance of being sliced into a 2×2 grid using [SAHI](https://github.com/obss/sahi) with 20% overlap. Slice dimensions are computed per-image as `ceil(size / 1.8)` so varying image sizes always produce exactly 4 slices. Annotations with less than 10% of their area within a slice are dropped. Sliced files are named `{stem}_slice_{0..3}{ext}`. This trains the model to work both with and without SAHI inference.
+
 ### Colony reflections
 
 A post-pipeline step (`reflect_colonies()`, enabled with `--extra`) alpha-blends faint, blurred copies of existing colony patches at random offsets to act as unlabeled distractors, helping the model learn to distinguish real colonies from artifacts.
@@ -79,4 +83,5 @@ Output always uses standard COCO format with fresh sequential IDs starting from 
 - `opencv-python` -- image I/O and reflection blending
 - `typer` -- CLI framework
 - `tqdm` -- progress bars
+- `sahi>=0.11.19` -- SAHI 2×2 image slicing
 - `fiftyone` -- dataset visualization (used by `main.py`)
